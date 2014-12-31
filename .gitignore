@@ -1,1 +1,3 @@
 pymclevel
+*.pyc
+*.log

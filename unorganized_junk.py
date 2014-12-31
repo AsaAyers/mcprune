@@ -40,16 +40,6 @@ naturalBlocks = [
 
 ]
 
-def getWorlds(srcPath):
-    src = mclevel.loadWorld(srcPath)
-
-    tempDir = os.path.join(tempfile.gettempdir(), "mcprune" + str(src.RandomSeed))
-    print tempDir
-    if not os.path.isdir(tempDir):
-        print 'copytree'
-        shutil.copytree(srcPath, tempDir)
-
-    return ( src, mclevel.fromFile(tempDir) )
 
 def getChunkList(level):
     return list(level.allChunks)
