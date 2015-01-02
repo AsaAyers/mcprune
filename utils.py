@@ -1,14 +1,31 @@
-import shutil
+import logging
+import math
+import numpy
 import os
 import pymclevel
-import logging
+import shutil
+import tempfile
 
 logger = logging.getLogger(__name__)
 
 saveFileDir = pymclevel.mclevelbase.saveFileDir
 
+# http://stackoverflow.com/a/1392549/35247
+def get_size(start_path = '.'):
+    total_size = 0
+    if os.path.isfile(start_path):
+        total_size += os.path.getsize(start_path)
+
+    for dirpath, dirnames, filenames in os.walk(start_path):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            total_size += os.path.getsize(fp)
+
+    return float("{0:.2f}".format(float(total_size) / 1024 / 1024))
+
 def getWorlds(srcPath, destPath=None, clean=False):
     srcPath = os.path.join(saveFileDir, srcPath)
+    src = pymclevel.fromFile(srcPath, readonly=True)
     if destPath:
         destPath = os.path.join(saveFileDir, destPath)
     else:
@@ -16,7 +33,6 @@ def getWorlds(srcPath, destPath=None, clean=False):
 
     logger.info("Source: %s", srcPath)
     logger.info("Dest: %s", destPath)
-    src = pymclevel.fromFile(srcPath, readonly=True)
 
     if clean and os.path.isdir(destPath):
         logger.info("Deleting target")
@@ -29,7 +45,7 @@ def getWorlds(srcPath, destPath=None, clean=False):
     return ( src, pymclevel.fromFile(destPath) )
 
 regionSize = 32
-def chunksInRegion(rx, rz):
+def getChunksInRegion(rx, rz):
     minX = rx * regionSize
     minZ = rz * regionSize
 
@@ -40,18 +56,43 @@ def chunksInRegion(rx, rz):
 
     return chunkList
 
-def defragRegion(src, dest, rx, rz):
-    chunkList = set(dest.allChunks) & set(chunksInRegion(rx, rz))
+def defragRegion(src, dest, keepChunks, rx, rz):
+    chunksInRegion = [ pos for pos in getChunksInRegion(rx, rz)
+            if dest.containsChunk(*pos) ]
+
+    cx, cz = chunksInRegion[0]
+    srcPath = src.getRegionForChunk(cx, cz).path
+    startSize = get_size(srcPath)
+    if startSize <= 0.5:
+        # Not enough gain in defragging very small regions.
+        return False
 
     # ALL chunks must be deleted to get the file to be removed.
-    for pos in chunkList:
+    for pos in chunksInRegion:
         dest.deleteChunk(*pos)
 
-    # Now copying all of the present chunks back in will regenerate
-    # the file
-    for cx, cz in chunkList:
+    totalChunks = 0
+    # Now copying all of the keepChunks back in will regenerate the file
+    for cx, cz in keepChunks:
         copyChunkAtPosition(src, dest, cx, cz)
+        totalChunks += 1
 
+    destPath = dest.getRegionForChunk(cx, cz).path
+
+    percent = int( float(totalChunks) / len(chunksInRegion) * 100)
+    if startSize >= get_size(destPath):
+        logger.warn("Defrag %s, %s (%s MB -> %s MB) %s%%", rx, rz,
+                startSize, get_size(destPath), percent)
+
+        shutil.copy(srcPath, destPath)
+    else:
+        logger.info("Defrag %s, %s (%s chunks -> %s chunks) %s%%", rx, rz,
+                len(chunksInRegion), totalChunks, percent)
+
+    return True
+
+def chunkListToRegionList(coords):
+    return set([ (cx >> 5, cz >> 5) for cx, cz in coords ])
 
 # From minecraft_server.py
 def copyChunkAtPosition(tempWorld, level, cx, cz):
@@ -64,3 +105,18 @@ def copyChunkAtPosition(tempWorld, level, cx, cz):
 
     level.worldFolder.saveChunk(cx, cz, tempChunkBytes)
     level._allChunks = None
+
+
+def getBlockCounts(chunk):
+    blockCounts = numpy.zeros((65536,), 'uint64')
+
+    ch = chunk
+
+    btypes = numpy.array(ch.Data.ravel(), dtype='uint16')
+    btypes <<= 12
+    btypes += ch.Blocks.ravel()
+    counts = numpy.bincount(btypes)
+
+    blockCounts[:counts.shape[0]] += counts
+
+    return blockCounts

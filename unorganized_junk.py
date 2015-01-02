@@ -14,31 +14,8 @@ import tempfile
 
 from Queue import Queue
 from minecraft_server import MCServerChunkGenerator
-from numpy import zeros, bincount
 from threading import Thread
 
-naturalBlocks = [
-    # Even though these can be spaned naturally, they are commonly used in
-    # builds by players.
-    #
-    # (4), # Cobblestone
-    # (5,0), # Oak planks
-    # (54,2), (54,3), (54,4), (54,5), # Chests
-    # (85), # fence
-
-    (0), (1,0), (9), (7), (1,5), (1,1), (1,3), (3,0), (13), (16), (2), (15),
-    (11), (12,0), (73), (161,1), (162,1), (31,1), (18,8), (18,0), (161,9),
-    (14), (97,0), (24,0), (78), (10), (21), (56), (18,10), (18,2), (17,0),
-    (18,1), (18,9), (82), (129), (49), (175,10), (17,2), (175,2), (30), (66),
-    (17,1), (48), (37), (175,0), (8), (38,0), (99,5), (38,8), (100,9), (100,7),
-    (100,3), (100,1), (38,3), (100,10), (39), (100,8), (100,6), (100,4),
-    (99,10), (100,2), (79), (40), (17,4), (175,1), (83), (99,8), (99,6),
-    (99,2), (99,4), (38,5), (175,4), (99,9), (99,3), (99,7), (52), (175,5),
-    (99,1), (100,5), (50), (17,8), (38,7), (38,6), (38,4), (86,3), (86,1),
-    (86,0), (86,2)
-
-
-]
 
 
 def getChunkList(level):
@@ -94,24 +71,6 @@ def removeChunks(dest, toRemove):
         dest.deleteChunk(*pos)
     dest.saveInPlace()
 
-def onlyNaturalBlocks(level, chunk):
-    blockCounts = getBlockCounts(chunk)
-    for blockID in range(materials.id_limit):
-        block = level.materials.blockWithID(blockID, 0)
-        if block.hasVariants:
-            for data in range(16):
-                if naturalBlocks.count((blockID, data)) > 0:
-                    continue
-                i = (data << 12) + blockID
-                if blockCounts[i]:
-                    return False
-        else:
-            if naturalBlocks.count((blockID)) > 0:
-                continue
-            count = int(sum(blockCounts[(d << 12) + blockID] for d in range(16)))
-            if count:
-                return False
-    return True
 
 def analyze(level):
     """
@@ -119,7 +78,7 @@ def analyze(level):
 
     Counts all of the block types in every chunk of the world.
     """
-    blockCounts = zeros((65536,), 'uint64')
+    blockCounts = numpy.zeros((65536,), 'uint64')
     sizeOnDisk = 0
 
     print "Analyzing {0} chunks...".format(level.chunkCount)
@@ -131,7 +90,7 @@ def analyze(level):
         btypes = numpy.array(ch.Data.ravel(), dtype='uint16')
         btypes <<= 12
         btypes += ch.Blocks.ravel()
-        counts = bincount(btypes)
+        counts = numpy.bincount(btypes)
 
         blockCounts[:counts.shape[0]] += counts
         if i % 100 == 0:
@@ -160,99 +119,8 @@ def analyze(level):
 
 # logging.basicConfig(level=logging.DEBUG)
 
-minInhabited = -1
-
-blockIds = [
-    # 50, # torch
-    # 85, # Fence
-    54, 146, 4, 20, 23, 25, 26, 27, 28, 29, 33, 34, 35, 41, 42, 43, 44, 45, 47,
-    53, 55, 58, 61, 62, 63, 64, 65, 67, 68, 69, 70, 71, 72, 75, 76, 77, 80, 84,
-    92, 93, 94, 95, 96, 98, 101, 102, 107, 108, 109, 114, 116, 117, 123, 124,
-    130, 134, 135, 136, 139, 140, 143, 145, 147, 148, 149, 150, 151, 152, 154,
-    155, 156, 157, 158, 160, 163, 167, 170, 171, 173, 176, 177, 178, 180, 181,
-    183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196
-]
 
 
-
-def getBlockCounts(chunk):
-    blockCounts = zeros((65536,), 'uint64')
-
-    ch = chunk
-
-    btypes = numpy.array(ch.Data.ravel(), dtype='uint16')
-    btypes <<= 12
-    btypes += ch.Blocks.ravel()
-    counts = bincount(btypes)
-
-    blockCounts[:counts.shape[0]] += counts
-
-    return blockCounts
-
-def foo(level, blockCounts, blockID):
-    block = level.materials.blockWithID(blockID, 0)
-    if block.hasVariants:
-        for data in range(16):
-            i = (data << 12) + blockID
-            if blockCounts[i]:
-                idstring = "({id}:{data})".format(id=blockID, data=data)
-                print "{idstring:9} {name:30}".format(
-                      idstring=idstring, name=level.materials.blockWithID(blockID, data).name)
-                return blockCounts[i]
-
-    else:
-        count = int(sum(blockCounts[(d << 12) + blockID] for d in range(16)))
-        if count:
-            idstring = "({id})".format(id=blockID)
-            print "{idstring:9} {name:30}".format(
-                  idstring=idstring, name=level.materials.blockWithID(blockID, 0).name)
-            return count
-    return 0
-
-
-allowedEntities = [
-    "Bat",
-    "Creeper",
-    "Enderman",
-    "Skeleton",
-    "Witch",
-    "Zombie",
-    "Guardian",
-    "Squid",
-    "Spider",
-    "Wolf",
-    "Ozelot",
-    "XPOrb",
-    "MinecartChest",
-    "Item",
-    "FallingSand"
-
-]
-allowedTiles = [
-    "MobSpawner",
-    "Chest"
-]
-def uninhabited(level, chunk):
-    for e in chunk.Entities:
-        if allowedEntities.count(e["id"].value):
-            continue
-        print "{idstring:9} {name:30}".format(
-            idstring="(0:e)", name=e["id"].value)
-        return False
-
-    for e in chunk.TileEntities:
-        if allowedTiles.count(e["id"].value):
-            continue
-        print "{idstring:9} {name:30}".format(
-            idstring="(0:t)", name=e["id"].value)
-        return False
-
-    bc = getBlockCounts(level, chunk)
-    for id in blockIds:
-        if foo(level, bc, id):
-            return False
-
-    return True
 
 def listBlocks(level):
     for blockID in blockIds:
