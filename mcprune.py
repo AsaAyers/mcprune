@@ -9,10 +9,13 @@ from pymclevel import materials
 
 logger = logging.getLogger(__name__)
 
+def chunkToRegion(pos):
+    return (pos[0] >> 5, pos[1] >> 5)
+
 def extractBlockCount(level, blockCounts, blockID):
     block = level.materials.blockWithID(blockID, 0)
     if block.hasVariants:
-        for data in range(16):
+        for data in xrange(16):
             i = (data << 12) + blockID
             if blockCounts[i]:
                 return ( level.materials.blockWithID(blockID, data).name,
@@ -36,63 +39,50 @@ class McPrune:
         self.boundingBox = boundingBox
         self.targetSize = 500
 
-    def uninhabitedMode(self, dest, chunk):
-        return self.inhabitedBy(dest, chunk) is None
+    def removeChunk(self, chunk):
+        tmp = self.inhabitedBy(self.dest, chunk)
 
-    def run(self, shouldDelete=None):
-        if shouldDelete is None:
-            shouldDelete = self.uninhabitedMode
-        src, dest = utils.getWorlds(self.srcName, self.destName, clean=True)
+        # print (-122 >> 5, -8 >> 5), chunk.chunkPosition, tmp, (tmp is None)
+        return tmp is None
 
+    def run(self, clean=True):
+        src, dest = utils.getWorlds(self.srcName, self.destName, clean=clean)
+        self.dest = dest
+        regionList = self.getRegions(dest)
 
-        for i, (rx, rz) in enumerate(self.getRegions(dest), 1):
-            percent = int((i / total * 100))
-            if utils.defragRegion(src, dest, keepChunks, *lastRegion):
+        total = len(regionList)
+        for i, (rx, rz) in enumerate(regionList, 1):
+            percent = int( i / total * 100.0)
+
+            if utils.defragRegion(src, dest, rx, rz, self.removeChunk):
                 sizeMB = utils.get_size(dest.worldFolder.filename)
                 logger.info("Size: %s MB (%s%%)", sizeMB, percent)
-                return sizeMB < self.targetSize
-            else:
-                logger.info("Region %s (%s%%)", lastRegion, percent)
-
-
-        chunkList = self.getChunkList(dest)
-
-        total = float(len(chunkList))
-        lastRegion = None
-        keepChunks = []
-
-        def processRegion(lastRegion, keepChunks):
-            percent = int((i / total * 100))
-            if utils.defragRegion(src, dest, keepChunks, *lastRegion):
-                sizeMB = utils.get_size(dest.worldFolder.filename)
-                logger.info("Size: %s MB (%s%%)", sizeMB, percent)
-                return sizeMB < self.targetSize
-            else:
-                logger.info("Region %s (%s%%)", lastRegion, percent)
-
-        for i, pos in enumerate(chunkList, 1):
-            cx, cz = pos
-
-            if lastRegion and (cx >> 5, cz >> 5) != lastRegion:
-                if processRegion(lastRegion, keepChunks):
-                    lastRegion = None
+                if sizeMB < self.targetSize:
                     break;
-                keepChunks = []
-
-            lastRegion = (cx >> 5, cz >> 5)
-            chunk = dest.getChunk(cx, cz)
-            if not shouldDelete(dest, chunk):
-                keepChunks.append(pos)
-
-        if lastRegion:
-            processRegion(lastRegion, keepChunks)
+            else:
+                logger.info("Region %s (%s%%)", (rx, rz), percent)
 
         sizeMB = utils.get_size(dest.worldFolder.filename)
         logger.info("Final Size: %s MB", sizeMB)
 
+    def getRegions(self, dest):
+        regions = list(set(map(chunkToRegion, self.getChunkList(dest))))
+
+        spawnRX = dest.root_tag['Data']['SpawnX'].value >> 5
+        spawnRZ = dest.root_tag['Data']['SpawnZ'].value >> 5
+        def sortKey(pos):
+            distX = (pos[0] - spawnRX)
+            distZ = (pos[1] - spawnRZ)
+            dist = math.sqrt( (distX * distX) + (distZ * distZ))
+
+            return dist
+
+        regions.sort(key=sortKey, reverse=True)
+        return regions
+
     def getChunkList(self, dest):
-        chunkList = list(dest.allChunks)
-        logger.info("Total chunks in world: %s", len(chunkList))
+        print "total chunks:", len(list(dest.allChunks))
+
         if self.boundingBox:
             logger.info("Bounding box: %s", self.boundingBox)
             x1, z1, x2, z2 = self.boundingBox
@@ -100,45 +90,12 @@ class McPrune:
             # chunkList is a set of chunk coordinates, but the boundingBox is
             # in block coordinates. x and z are multiplied by 16 to convert the
             # chunks to block coordinates for comparison with the bounding box.
-            chunkList = [(x, z) for x, z in chunkList 
+            chunkList = [(x, z) for x, z in dest.allChunks
                 if (x1 <= (x*16) <= x2) and (z1 <= (z*16) <= z2) ]
-
-        logger.info("Chunks to process: %s", len(chunkList))
-
-        return self.prioritizeChunks(dest, chunkList)
-
-    def prioritizeChunks(self, dest, chunkList):
-        def chunkToRegion(pos):
-            return (pos[0] >> 5, pos[1] >> 5)
-
-        spawnRX = dest.root_tag['Data']['SpawnX'].value >> 5
-        spawnRZ = dest.root_tag['Data']['SpawnZ'].value >> 5
-        def sortKey(pos):
-            '''
-            '''
-            rx, rz = chunkToRegion(pos)
-            distX = (rx - spawnRX)
-            distZ = (rz - spawnRZ)
-            dist = int(math.sqrt( (distX * distX) + (distZ * distZ)))
-
-            return (dist, rx, rz)
-
-        # chunkList.sort(key=chunkToRegion)
-        chunkList.sort(key=sortKey, reverse=True)
-        return chunkList
-
-        last = None
-        for pos in map(chunkToRegion, chunkList):
-            if last != pos:
-                last = pos
-                print pos
-
-        return []
-
+        else:
+            chunkList = list(dest.allChunks)
 
         return chunkList
-
-
 
     def inhabitedBy(self, level, chunk):
         allowedEntities = [
@@ -180,7 +137,7 @@ class McPrune:
             return e["id"].value
 
         allowedTiles = [
-            "Chest"
+            "Chest",
             "MobSpawner",
         ]
         for e in chunk.TileEntities:
@@ -188,37 +145,26 @@ class McPrune:
                 continue
             return e["id"].value
 
-        name, count = onlyNaturalBlocks(level, chunk)
-        if count > 0:
-            return name
-        return None
+        if onlyNaturalBlocks(level, chunk):
+            return None
+        return "Block"
 
-        blockIds = [
-            # 50, # torch
-            # 85, # Fence
-            54, 146, 4, 20, 23, 25, 26, 27, 28, 29, 33, 34, 35, 41, 42, 43, 44, 45, 47,
-            53, 55, 58, 61, 62, 63, 64, 65, 67, 68, 69, 70, 71, 72, 75, 76, 77, 80, 84,
-            92, 93, 94, 95, 96, 98, 101, 102, 107, 108, 109, 114, 116, 117, 123, 124,
-            130, 134, 135, 136, 139, 140, 143, 145, 147, 148, 149, 150, 151, 152, 154,
-            155, 156, 157, 158, 160, 163, 167, 170, 171, 173, 176, 177, 178, 180, 181,
-            183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196
-        ]
-        bc = utils.getBlockCounts(chunk)
-        for id in blockIds:
-            name, count = extractBlockCount(level, bc, id)
-            if count > 0:
-                return name
-
-        return None
 
 naturalBlocks = [
-    # Even though these can be spaned naturally, they are commonly used in
+    # Even though these can be generated naturally, they are commonly used in
     # builds by players.
     #
     # (4), # Cobblestone
     # (5,0), # Oak planks
     # (54,2), (54,3), (54,4), (54,5), # Chests
     # (85), # fence
+
+    (32), (81),
+    (175, 8),
+    (106),
+    (6), (6, 1), (6, 2), (6, 3), (6, 4), (6, 5),
+    (111),
+    (3, 1),
 
     (0), (1,0), (9), (7), (1,5), (1,1), (1,3), (3,0), (13), (16), (2), (15),
     (11), (12,0), (73), (161,1), (162,1), (31,1), (18,8), (18,0), (161,9),
@@ -233,26 +179,31 @@ naturalBlocks = [
 ]
 
 def onlyNaturalBlocks(level, chunk):
+    return utils.onlyNaturalBlocks(level, chunk)
+
     blockCounts = utils.getBlockCounts(chunk)
-    for blockID in range(materials.id_limit):
-        block = level.materials.blockWithID(blockID, 0)
-        if block.hasVariants:
-            for data in range(16):
-                if (blockID, data) in naturalBlocks:
-                    continue
-                i = (data << 12) + blockID
-                if blockCounts[i]:
-                    return ( level.materials.blockWithID(blockID, data).name,
-                        blockCounts[i]
-                    )
-        else:
-            if (blockID) in naturalBlocks:
+
+    # Instead of materials.id_limit which is the maximum possible ID I'm simply
+    # stopping at 431 (Dar Oak Door).
+    #
+    # The music disks have much higher numbers, but they aren't blocks, so they
+    # don't matter for this function.
+    for blockID in xrange(431):
+
+        if (blockID) in naturalBlocks:
+            continue
+
+        for data in xrange(16):
+            if (blockID, data) in naturalBlocks:
                 continue
-            count = int(sum(blockCounts[(d << 12) + blockID] for d in range(16)))
+
+            i = (data << 12) + blockID
+            count = blockCounts[i]
             if count:
-                return ( level.materials.blockWithID(blockID, 0).name,
-                    blockCounts[i]
-                )
+                # idstring = "({id}:{data})".format(id=blockID, data=data)
+                # print "{idstring:9} {name:30}: {count:<10}".format( idstring=idstring, name=level.materials.blockWithID(blockID, data).name, count=count)
+                return ((blockID, data), count)
+
     return (None, 0)
 
 
@@ -263,6 +214,12 @@ def _convertToBoundingBox(value):
         raise ValueError("Bounding box: must be 4 numbers")
 
     x1, z1, x2, z2 = boundingBox
+
+    x1 = (x1 >> 4) << 4
+    z1 = (z1 >> 4) << 4
+    x2 = (x2 >> 4) << 4
+    z2 = (z2 >> 4) << 4
+
     return ( min(x1, x2), min(z1, z2), max(x1, x2), max(z1, z2))
 
 def usage():
@@ -272,6 +229,7 @@ def main(argv):
     try:
         opts, args = getopt.getopt(argv, "h", [
             "help",
+            "no-clean",
             "bounding-box="
         ])
     except getopt.GetoptError as err:
@@ -280,12 +238,15 @@ def main(argv):
         usage()
         sys.exit(2)
 
+    clean = True
     boundingBox = None
     for option, value in opts:
         if option == '--bounding-box':
             boundingBox = _convertToBoundingBox(value)
+        if option == '--no-clean':
+            clean = False
 
-    McPrune(args[0], args[1], boundingBox).run()
+    McPrune(args[0], args[1], boundingBox).run(clean)
 
 if __name__ == "__main__":
    main(sys.argv[1:])
